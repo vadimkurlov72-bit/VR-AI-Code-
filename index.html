@@ -103,19 +103,94 @@
       return c.toDataURL();
     }
 
+    function makeCeramicTexture(base, speck) {
+      var c = document.createElement('canvas');
+      c.width = 128; c.height = 128;
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, 128, 128);
+      for (var i = 0; i < 250; i++) {
+        ctx.fillStyle = speck + (0.03 + Math.random() * 0.05).toFixed(2).replace('0.', '.') + ')';
+        ctx.beginPath();
+        ctx.arc(Math.random() * 128, Math.random() * 128, Math.random() * 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // лёгкий градиент "глазури"
+      var grad = ctx.createLinearGradient(0, 0, 0, 128);
+      grad.addColorStop(0, 'rgba(255,255,255,0.12)');
+      grad.addColorStop(1, 'rgba(0,0,0,0.05)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+      return c.toDataURL();
+    }
+
+    function makeCitrusTexture(base, dark) {
+      var c = document.createElement('canvas');
+      c.width = 128; c.height = 128;
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, 128, 128);
+      for (var i = 0; i < 500; i++) {
+        var shade = Math.random() > 0.5 ? dark : '#ffffff';
+        ctx.fillStyle = shade + (Math.random() > 0.5 ? '33' : '22');
+        ctx.beginPath();
+        ctx.arc(Math.random() * 128, Math.random() * 128, 0.8 + Math.random() * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      return c.toDataURL();
+    }
+
+    function makePaperTexture() {
+      var c = document.createElement('canvas');
+      c.width = 128; c.height = 128;
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#f5f0e2';
+      ctx.fillRect(0, 0, 128, 128);
+      ctx.strokeStyle = 'rgba(120,110,90,0.5)';
+      ctx.lineWidth = 0.6;
+      for (var y = 10; y < 128; y += 10) {
+        ctx.beginPath(); ctx.moveTo(6, y); ctx.lineTo(122, y); ctx.stroke();
+      }
+      for (var j = 0; j < 200; j++) {
+        ctx.fillStyle = 'rgba(0,0,0,' + (Math.random() * 0.04) + ')';
+        ctx.fillRect(Math.random() * 128, Math.random() * 128, 1, 1);
+      }
+      return c.toDataURL();
+    }
+
+    function makeMetalTexture() {
+      var c = document.createElement('canvas');
+      c.width = 128; c.height = 128;
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#3a4a5c';
+      ctx.fillRect(0, 0, 128, 128);
+      for (var i = 0; i < 60; i++) {
+        var y = Math.random() * 128;
+        ctx.strokeStyle = 'rgba(255,255,255,' + (0.03 + Math.random() * 0.06) + ')';
+        ctx.lineWidth = 0.5 + Math.random();
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(128, y + (Math.random() - 0.5) * 6); ctx.stroke();
+      }
+      return c.toDataURL();
+    }
+
     window.addEventListener('DOMContentLoaded', function () {
-      var woodImg = document.createElement('img');
-      woodImg.id = 'woodTex';
-      woodImg.src = makeWoodTexture();
-      var floorImg = document.createElement('img');
-      floorImg.id = 'floorTex';
-      floorImg.src = makeFloorTexture();
-      var wallImg = document.createElement('img');
-      wallImg.id = 'wallTex';
-      wallImg.src = makeWallTexture();
-      document.querySelector('a-assets').appendChild(woodImg);
-      document.querySelector('a-assets').appendChild(floorImg);
-      document.querySelector('a-assets').appendChild(wallImg);
+      var assets = document.querySelector('a-assets');
+      var textures = {
+        woodTex: makeWoodTexture(),
+        floorTex: makeFloorTexture(),
+        wallTex: makeWallTexture(),
+        ceramicWhiteTex: makeCeramicTexture('#f2f2f2', 'rgba(120,120,120,'),
+        paperTex: makePaperTexture(),
+        metalTex: makeMetalTexture(),
+        tomatoTex: makeCitrusTexture('#d32f1a', '#7a1a10'),
+        orangeTex: makeCitrusTexture('#e0871f', '#a85f12')
+      };
+      Object.keys(textures).forEach(function (id) {
+        var img = document.createElement('img');
+        img.id = id;
+        img.src = textures[id];
+        assets.appendChild(img);
+      });
     });
 
     // ============================================================
@@ -222,8 +297,8 @@
         var my = Math.abs(this.moveY) > deadzone ? this.moveY : 0;
 
         var move = new THREE.Vector3();
-        move.addScaledVector(dir, -my * speed * delta);
-        move.addScaledVector(right, mx * speed * delta);
+        move.addScaledVector(dir, my * speed * delta);
+        move.addScaledVector(right, -mx * speed * delta);
 
         var pos = this.el.object3D.position;
         var newX = pos.x + move.x;
@@ -273,15 +348,29 @@
 
         if (this.grabbedEl) return;
 
+        // зона захвата — небольшой объём прямо перед ладонью
+        // (внутри "кулака"), а не сфера вокруг всего контроллера
         var closest = null;
-        var closestDist = 0.18;
+        var closestDist = Infinity;
         var items = document.querySelectorAll('.grabbable');
+        var localPos = new THREE.Vector3();
         for (var i = 0; i < items.length; i++) {
           var el = items[i];
           if (el.isGrabbed || el.isBroken) continue;
-          var pos = new THREE.Vector3();
-          el.object3D.getWorldPosition(pos);
-          var d = handPos.distanceTo(pos);
+          var worldPos = new THREE.Vector3();
+          el.object3D.getWorldPosition(worldPos);
+
+          localPos.copy(worldPos);
+          this.el.object3D.worldToLocal(localPos);
+
+          var inZone =
+            localPos.z > -0.115 && localPos.z < -0.015 &&
+            Math.abs(localPos.x) < 0.045 &&
+            localPos.y > -0.03 && localPos.y < 0.05;
+
+          if (!inZone) continue;
+
+          var d = handPos.distanceTo(worldPos);
           if (d < closestDist) { closestDist = d; closest = el; }
         }
 
@@ -392,20 +481,37 @@
         pos.y += this.velocity.y * delta;
         pos.z += this.velocity.z * delta;
 
-        // коллизия со стенами комнаты — отскакиваем, не пролетаем насквозь
-        if (pos.x < ROOM_BOUNDS.minX) { pos.x = ROOM_BOUNDS.minX; this.velocity.x *= -0.35; }
-        if (pos.x > ROOM_BOUNDS.maxX) { pos.x = ROOM_BOUNDS.maxX; this.velocity.x *= -0.35; }
-        if (pos.z < ROOM_BOUNDS.minZ) { pos.z = ROOM_BOUNDS.minZ; this.velocity.z *= -0.35; }
-        if (pos.z > ROOM_BOUNDS.maxZ) { pos.z = ROOM_BOUNDS.maxZ; this.velocity.z *= -0.35; }
+        // коллизия со стенами комнаты — можно разбиться об стену при сильном ударе
+        if (pos.x < ROOM_BOUNDS.minX || pos.x > ROOM_BOUNDS.maxX) {
+          var hitMinX = pos.x < ROOM_BOUNDS.minX;
+          var wallImpactX = Math.abs(this.velocity.x);
+          pos.x = hitMinX ? ROOM_BOUNDS.minX : ROOM_BOUNDS.maxX;
+          if (this.data.breakable && wallImpactX > this.data.breakThreshold) {
+            this.breakNow(pos, new THREE.Vector3(hitMinX ? 1 : -1, 0, 0));
+            return;
+          }
+          this.velocity.x *= -0.35;
+        }
+        if (pos.z < ROOM_BOUNDS.minZ || pos.z > ROOM_BOUNDS.maxZ) {
+          var hitMinZ = pos.z < ROOM_BOUNDS.minZ;
+          var wallImpactZ = Math.abs(this.velocity.z);
+          pos.z = hitMinZ ? ROOM_BOUNDS.minZ : ROOM_BOUNDS.maxZ;
+          if (this.data.breakable && wallImpactZ > this.data.breakThreshold) {
+            this.breakNow(pos, new THREE.Vector3(0, 0, hitMinZ ? 1 : -1));
+            return;
+          }
+          this.velocity.z *= -0.35;
+        }
 
         var surf = this.surfaceInfo(pos.x, pos.z);
 
         if (pos.y < surf.y) {
           var impactSpeed = Math.abs(this.velocity.y);
 
-          if (this.data.breakable && surf.isFloor && impactSpeed > this.data.breakThreshold) {
+          // теперь бьётся и об пол, и об стол — не только об пол
+          if (this.data.breakable && impactSpeed > this.data.breakThreshold) {
             pos.y = surf.y;
-            this.breakNow(pos);
+            this.breakNow(pos, new THREE.Vector3(0, 1, 0));
             return;
           }
 
@@ -427,14 +533,14 @@
           }
         }
       },
-      breakNow: function (pos) {
+      breakNow: function (pos, normal) {
         this.active = false;
         this.el.isBroken = true;
         this.el.classList.remove('grabbable');
         this.el.setAttribute('visible', false);
 
         if (this.data.breakType === 'splat') {
-          this.doSplat(pos);
+          this.doSplat(pos, normal || new THREE.Vector3(0, 1, 0));
         } else {
           this.doShatter(pos);
         }
@@ -476,19 +582,26 @@
         }
       },
 
-      // Помидор: пятно на полу + брызги капель + звук "шлёп"
-      doSplat: function (pos) {
+      // Помидор/апельсин: пятно на поверхности + брызги капель + звук "шлёп"
+      doSplat: function (pos, normal) {
         playSplatSound();
         var scene = this.el.sceneEl;
         var color = this.data.fragmentColor;
 
-        // пятно-декаль на полу
+        // пятно-декаль — ориентируется по нормали поверхности (пол/стол/стена)
         var stain = document.createElement('a-entity');
-        var stainSize = 0.09 + Math.random() * 0.05;
+        var stainSize = 0.07 + Math.random() * 0.04;
         stain.setAttribute('geometry', 'primitive: circle; radius: ' + stainSize + '; segments: 16');
         stain.setAttribute('material', 'color: ' + color + '; opacity: 0.85; transparent: true; roughness: 0.9; shader: flat; side: double');
-        stain.object3D.position.set(pos.x, 0.003, pos.z);
-        stain.object3D.rotation.set(-Math.PI / 2, Math.random() * Math.PI * 2, 0);
+
+        var offsetPos = pos.clone().addScaledVector(normal, 0.004);
+        stain.object3D.position.copy(offsetPos);
+
+        var quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+        var spin = new THREE.Quaternion().setFromAxisAngle(normal, Math.random() * Math.PI * 2);
+        quat.premultiply(spin);
+        stain.object3D.quaternion.copy(quat);
+
         scene.appendChild(stain);
         setTimeout(function () {
           stain.setAttribute('animation__fade', { property: 'material.opacity', to: 0, dur: 1500 });
@@ -516,9 +629,10 @@
             dropEl.addEventListener('loaded', function () {
               var vel = new THREE.Vector3(
                 (Math.random() - 0.5) * 2.6,
-                1.0 + Math.random() * 1.4,
+                (Math.random() - 0.5) * 2.6,
                 (Math.random() - 0.5) * 2.6
               );
+              vel.addScaledVector(normal, 1.3 + Math.random() * 1.2);
               dropEl.components['thrown-physics'].throwWith(vel);
               setTimeout(function () {
                 if (dropEl.parentNode) dropEl.parentNode.removeChild(dropEl);
@@ -564,41 +678,41 @@
 
     <!-- ============ Предметы для хватания (все бьющиеся) ============ -->
 
-    <!-- Помидор — особое разбивание: пятно + брызги + звук "шлёп" -->
+    <!-- Помидор — брызги: пятно + капли + звук "шлёп" -->
     <a-entity class="grabbable" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #c0392b" position="-0.45 0.6 -1.45" shadow="cast:true">
-      <a-sphere radius="0.05" scale="1 0.92 1" color="#d32f1a" material="roughness:0.3; metalness:0.05" segments-height="24" segments-width="24"></a-sphere>
-      <a-sphere radius="0.05" scale="1 0.92 1" color="#e0523a" material="roughness:0.3; metalness:0.05; opacity:0.5; transparent:true" position="0.015 0.01 0.015" segments-height="16" segments-width="16"></a-sphere>
+      <a-sphere radius="0.05" scale="1 0.92 1" material="src: #tomatoTex; roughness:0.3; metalness:0.05" segments-height="24" segments-width="24"></a-sphere>
       <a-sphere radius="0.012" color="#3f7a2e" material="roughness:0.5" position="0 0.052 0"></a-sphere>
     </a-entity>
 
     <!-- Кружка -->
     <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #f0f0f0" position="0 0.615 -1.45" shadow="cast:true">
-      <a-cylinder radius="0.042" height="0.085" color="#f5f5f5" material="roughness:0.2; metalness:0.05" segments-radial="24"></a-cylinder>
-      <a-cylinder radius="0.044" height="0.006" color="#e6e6e6" material="roughness:0.2" position="0 0.043 0" segments-radial="24"></a-cylinder>
-      <a-torus radius="0.03" radius-tubular="0.007" position="0.055 0 0" rotation="0 90 0" color="#f5f5f5" material="roughness:0.2" segments-tubular="16"></a-torus>
+      <a-cylinder radius="0.042" height="0.085" material="src: #ceramicWhiteTex; roughness:0.2; metalness:0.05" segments-radial="24"></a-cylinder>
+      <a-cylinder radius="0.044" height="0.006" material="src: #ceramicWhiteTex; roughness:0.2" position="0 0.043 0" segments-radial="24"></a-cylinder>
+      <a-torus radius="0.03" radius-tubular="0.007" position="0.055 0 0" rotation="0 90 0" material="src: #ceramicWhiteTex; roughness:0.2" segments-tubular="16"></a-torus>
     </a-entity>
 
     <!-- Металлический шар -->
     <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c" position="0.45 0.58 -1.45" shadow="cast:true">
-      <a-sphere radius="0.045" color="#3a4a5c" material="roughness:0.12; metalness:0.9" segments-height="32" segments-width="32"></a-sphere>
+      <a-sphere radius="0.045" material="src: #metalTex; roughness:0.12; metalness:0.9" segments-height="32" segments-width="32"></a-sphere>
     </a-entity>
 
     <!-- Книга -->
     <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #254a75" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
       <a-box width="0.16" height="0.025" depth="0.12" color="#254a75" material="roughness:0.85; metalness:0"></a-box>
-      <a-box width="0.15" height="0.016" depth="0.11" color="#f2ecd9" material="roughness:0.9; metalness:0" position="0 0.006 0"></a-box>
+      <a-box width="0.15" height="0.016" depth="0.11" material="src: #paperTex; roughness:0.9; metalness:0" position="0 0.006 0"></a-box>
     </a-entity>
 
-    <!-- Тарелка -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.8; fragmentColor: #eeeeee; restHeight: 0.008" position="0 0.545 -1.2" shadow="cast:true">
-      <a-cylinder radius="0.09" height="0.012" color="#f2f2f2" material="roughness:0.25; metalness:0.05" segments-radial="28"></a-cylinder>
-      <a-cylinder radius="0.075" height="0.014" color="#e6e6e6" material="roughness:0.25; metalness:0.05" segments-radial="28" position="0 0.001 0"></a-cylinder>
+    <!-- Тарелка: плоское дно + приподнятый ободок по краю -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.8; fragmentColor: #eeeeee; restHeight: 0.012" position="0 0.542 -1.2" shadow="cast:true">
+      <a-cylinder radius="0.085" height="0.01" material="src: #ceramicWhiteTex; roughness:0.25; metalness:0.05" segments-radial="32"></a-cylinder>
+      <a-torus radius="0.075" radius-tubular="0.011" position="0 0.006 0" rotation="90 0 0" material="src: #ceramicWhiteTex; roughness:0.25; metalness:0.05" segments-tubular="20"></a-torus>
     </a-entity>
 
-    <!-- Стеклянный стакан -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.045" position="0.45 0.6 -1.2" shadow="cast:true">
-      <a-cylinder radius="0.04" height="0.09" color="#cfe8f0" material="roughness:0.05; metalness:0.1; opacity:0.35; transparent:true" segments-radial="24"></a-cylinder>
-      <a-torus radius="0.04" radius-tubular="0.003" position="0 0.045 0" color="#cfe8f0" material="roughness:0.05; opacity:0.6; transparent:true" segments-tubular="16"></a-torus>
+    <!-- Стеклянный стакан: слегка расширяется кверху, как настоящий -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.05" position="0.45 0.6 -1.2" shadow="cast:true">
+      <a-cone radius-bottom="0.032" radius-top="0.04" height="0.1" color="#cfe8f0" material="roughness:0.04; metalness:0.05; opacity:0.3; transparent:true; side:double" segments-radial="24"></a-cone>
+      <a-torus radius="0.04" radius-tubular="0.0025" position="0 0.05 0" color="#cfe8f0" material="roughness:0.04; opacity:0.7; transparent:true" segments-tubular="16"></a-torus>
+      <a-cylinder radius="0.032" height="0.003" position="0 -0.049 0" color="#cfe8f0" material="roughness:0.04; opacity:0.5; transparent:true" segments-radial="24"></a-cylinder>
     </a-entity>
 
     <!-- Деревянный кубик -->
@@ -606,9 +720,9 @@
       <a-box width="0.08" height="0.08" depth="0.08" material="src: #woodTex; roughness:0.6; metalness:0.02"></a-box>
     </a-entity>
 
-    <!-- Апельсин -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #e0871f; restHeight: 0.045" position="0 0.58 -0.95" shadow="cast:true">
-      <a-sphere radius="0.045" color="#e0871f" material="roughness:0.55; metalness:0.02" segments-height="24" segments-width="24"></a-sphere>
+    <!-- Апельсин — тоже брызгается, как помидор, только оранжевым -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #e0871f" position="0 0.58 -0.95" shadow="cast:true">
+      <a-sphere radius="0.045" material="src: #orangeTex; roughness:0.55; metalness:0.02" segments-height="24" segments-width="24"></a-sphere>
       <a-cylinder radius="0.004" height="0.01" color="#4a7c2f" position="0 0.047 0"></a-cylinder>
     </a-entity>
 

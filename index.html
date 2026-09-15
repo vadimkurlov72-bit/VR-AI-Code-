@@ -23,7 +23,7 @@
   <div id="intro">
     Надень Oculus Quest 2, нажми «Enter VR», разреши доступ к VR.<br>
     Левый стик — ходьба, правый стик влево/вправо — поворот.<br>
-    Курок/Grip — схватить предмет. Разбей яблоко или кружку об пол!
+    Курок/Grip — схватить предмет. Все предметы можно разбить об пол — помидор брызгается по-особому!
   </div>
 
   <script>
@@ -70,6 +70,39 @@
       return c.toDataURL();
     }
 
+    function makeWallTexture() {
+      var c = document.createElement('canvas');
+      c.width = 256; c.height = 256;
+      var ctx = c.getContext('2d');
+
+      // базовая штукатурка
+      ctx.fillStyle = '#e9e4da';
+      ctx.fillRect(0, 0, 256, 256);
+
+      // кирпичная кладка полупрозрачными линиями
+      var brickW = 64, brickH = 24;
+      ctx.strokeStyle = 'rgba(150,135,115,0.35)';
+      ctx.lineWidth = 2;
+      for (var row = 0, y = 0; y <= 256; y += brickH, row++) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(256, y); ctx.stroke();
+        var offset = (row % 2 === 0) ? 0 : brickW / 2;
+        for (var x = offset; x <= 256; x += brickW) {
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + brickH); ctx.stroke();
+        }
+      }
+
+      // лёгкий шум/грязь для реализма
+      for (var j = 0; j < 900; j++) {
+        ctx.fillStyle = 'rgba(0,0,0,' + (Math.random() * 0.04) + ')';
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+      }
+      for (var k = 0; k < 300; k++) {
+        ctx.fillStyle = 'rgba(255,255,255,' + (Math.random() * 0.05) + ')';
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+      }
+      return c.toDataURL();
+    }
+
     window.addEventListener('DOMContentLoaded', function () {
       var woodImg = document.createElement('img');
       woodImg.id = 'woodTex';
@@ -77,14 +110,18 @@
       var floorImg = document.createElement('img');
       floorImg.id = 'floorTex';
       floorImg.src = makeFloorTexture();
+      var wallImg = document.createElement('img');
+      wallImg.id = 'wallTex';
+      wallImg.src = makeWallTexture();
       document.querySelector('a-assets').appendChild(woodImg);
       document.querySelector('a-assets').appendChild(floorImg);
+      document.querySelector('a-assets').appendChild(wallImg);
     });
 
     // ============================================================
-    // Синтезированный звук разбивания (без файлов, Web Audio)
+    // Синтезированные звуки (без файлов, Web Audio)
     // ============================================================
-    function playBreakSound() {
+    function playCrashSound() {
       try {
         var ctx = new (window.AudioContext || window.webkitAudioContext)();
         var bufferSize = ctx.sampleRate * 0.25;
@@ -104,18 +141,54 @@
         filter.connect(gain);
         gain.connect(ctx.destination);
         noise.start();
-      } catch (e) { /* без звука, если Web Audio недоступен */ }
+      } catch (e) {}
+    }
+
+    function playSplatSound() {
+      try {
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        var bufferSize = ctx.sampleRate * 0.3;
+        var buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        var data = buffer.getChannelData(0);
+        for (var i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
+        }
+        var noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        var filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 450;
+        var gain = ctx.createGain();
+        gain.gain.value = 0.6;
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+        noise.start();
+
+        var osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(170, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 0.15);
+        var oGain = ctx.createGain();
+        oGain.gain.setValueAtTime(0.45, ctx.currentTime);
+        oGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
+        osc.connect(oGain);
+        oGain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.17);
+      } catch (e) {}
     }
 
     // ============================================================
-    // Передвижение по сцене джойстиками (левый — ходьба, правый — поворот)
+    // Передвижение по сцене джойстиками + коллизия со стенами комнаты
     // ============================================================
+    var ROOM_BOUNDS = { minX: -4.7, maxX: 4.7, minZ: -4.7, maxZ: 4.7 };
+
     AFRAME.registerComponent('locomotion', {
       init: function () {
         this.moveX = 0;
         this.moveY = 0;
         this.turnX = 0;
-        this.turnCooldown = 0;
 
         var self = this;
         var left = document.querySelector('#leftHand');
@@ -151,10 +224,18 @@
         var move = new THREE.Vector3();
         move.addScaledVector(dir, -my * speed * delta);
         move.addScaledVector(right, mx * speed * delta);
-        this.el.object3D.position.add(move);
 
-        // плавный поворот правым стиком
-        this.turnCooldown -= delta;
+        var pos = this.el.object3D.position;
+        var newX = pos.x + move.x;
+        var newZ = pos.z + move.z;
+
+        // коллизия со стенами — не даём выйти за пределы комнаты
+        newX = Math.max(ROOM_BOUNDS.minX, Math.min(ROOM_BOUNDS.maxX, newX));
+        newZ = Math.max(ROOM_BOUNDS.minZ, Math.min(ROOM_BOUNDS.maxZ, newZ));
+
+        pos.x = newX;
+        pos.z = newZ;
+
         if (Math.abs(this.turnX) > 0.3) {
           this.el.object3D.rotation.y -= THREE.MathUtils.degToRad(this.turnX * 90 * delta);
         }
@@ -272,13 +353,15 @@
     });
 
     // ============================================================
-    // Физика: гравитация, отскок, трение, посадка на стол/пол,
-    // и разбивание хрупких предметов при сильном ударе об пол
+    // Физика: гравитация, отскок, трение, посадка на стол/пол/стены,
+    // и разбивание предметов (обычное "шатер" или брызги для помидора)
     // ============================================================
     AFRAME.registerComponent('thrown-physics', {
       schema: {
         restHeight: { type: 'number', default: 0.05 },
         breakable: { type: 'boolean', default: false },
+        breakType: { type: 'string', default: 'shatter' }, // 'shatter' | 'splat'
+        breakThreshold: { type: 'number', default: 1.1 },
         fragmentColor: { type: 'color', default: '#c0392b' }
       },
       init: function () {
@@ -309,13 +392,18 @@
         pos.y += this.velocity.y * delta;
         pos.z += this.velocity.z * delta;
 
+        // коллизия со стенами комнаты — отскакиваем, не пролетаем насквозь
+        if (pos.x < ROOM_BOUNDS.minX) { pos.x = ROOM_BOUNDS.minX; this.velocity.x *= -0.35; }
+        if (pos.x > ROOM_BOUNDS.maxX) { pos.x = ROOM_BOUNDS.maxX; this.velocity.x *= -0.35; }
+        if (pos.z < ROOM_BOUNDS.minZ) { pos.z = ROOM_BOUNDS.minZ; this.velocity.z *= -0.35; }
+        if (pos.z > ROOM_BOUNDS.maxZ) { pos.z = ROOM_BOUNDS.maxZ; this.velocity.z *= -0.35; }
+
         var surf = this.surfaceInfo(pos.x, pos.z);
 
         if (pos.y < surf.y) {
           var impactSpeed = Math.abs(this.velocity.y);
 
-          // разбивание хрупкого предмета при сильном ударе об пол
-          if (this.data.breakable && surf.isFloor && impactSpeed > 1.1) {
+          if (this.data.breakable && surf.isFloor && impactSpeed > this.data.breakThreshold) {
             pos.y = surf.y;
             this.breakNow(pos);
             return;
@@ -345,14 +433,22 @@
         this.el.classList.remove('grabbable');
         this.el.setAttribute('visible', false);
 
-        playBreakSound();
+        if (this.data.breakType === 'splat') {
+          this.doSplat(pos);
+        } else {
+          this.doShatter(pos);
+        }
+      },
 
+      // Обычное разбивание — осколки разлетаются и звук "треска"
+      doShatter: function (pos) {
+        playCrashSound();
         var scene = this.el.sceneEl;
         var color = this.data.fragmentColor;
         var count = 7;
         for (var i = 0; i < count; i++) {
           var frag = document.createElement('a-entity');
-          var size = 0.015 + Math.random() * 0.02;
+          var size = 0.014 + Math.random() * 0.02;
           frag.setAttribute('geometry', 'primitive: tetrahedron; radius: ' + size);
           frag.setAttribute('material', 'color: ' + color + '; roughness: 0.6; metalness: 0.05');
           frag.setAttribute('shadow', 'cast: true');
@@ -378,6 +474,58 @@
             });
           })(frag);
         }
+      },
+
+      // Помидор: пятно на полу + брызги капель + звук "шлёп"
+      doSplat: function (pos) {
+        playSplatSound();
+        var scene = this.el.sceneEl;
+        var color = this.data.fragmentColor;
+
+        // пятно-декаль на полу
+        var stain = document.createElement('a-entity');
+        var stainSize = 0.09 + Math.random() * 0.05;
+        stain.setAttribute('geometry', 'primitive: circle; radius: ' + stainSize + '; segments: 16');
+        stain.setAttribute('material', 'color: ' + color + '; opacity: 0.85; transparent: true; roughness: 0.9; shader: flat; side: double');
+        stain.object3D.position.set(pos.x, 0.003, pos.z);
+        stain.object3D.rotation.set(-Math.PI / 2, Math.random() * Math.PI * 2, 0);
+        scene.appendChild(stain);
+        setTimeout(function () {
+          stain.setAttribute('animation__fade', { property: 'material.opacity', to: 0, dur: 1500 });
+          setTimeout(function () {
+            if (stain.parentNode) stain.parentNode.removeChild(stain);
+          }, 1600);
+        }, 12000);
+
+        // капельки-брызги
+        var count = 10;
+        for (var i = 0; i < count; i++) {
+          var drop = document.createElement('a-entity');
+          var size = 0.006 + Math.random() * 0.01;
+          drop.setAttribute('geometry', 'primitive: sphere; radius: ' + size);
+          drop.setAttribute('material', 'color: ' + color + '; roughness: 0.3; metalness: 0.1; shader: standard');
+          drop.object3D.position.set(
+            pos.x + (Math.random() - 0.5) * 0.03,
+            pos.y + Math.random() * 0.03,
+            pos.z + (Math.random() - 0.5) * 0.03
+          );
+          drop.setAttribute('thrown-physics', 'restHeight: 0.006');
+          scene.appendChild(drop);
+
+          (function (dropEl) {
+            dropEl.addEventListener('loaded', function () {
+              var vel = new THREE.Vector3(
+                (Math.random() - 0.5) * 2.6,
+                1.0 + Math.random() * 1.4,
+                (Math.random() - 0.5) * 2.6
+              );
+              dropEl.components['thrown-physics'].throwWith(vel);
+              setTimeout(function () {
+                if (dropEl.parentNode) dropEl.parentNode.removeChild(dropEl);
+              }, 8000);
+            });
+          })(drop);
+        }
       }
     });
   </script>
@@ -391,10 +539,19 @@
       material="src: #floorTex; repeat: 6 6; roughness: 0.85; metalness: 0.02"
       shadow="receive: true"></a-plane>
 
-    <!-- Стены -->
-    <a-box position="0 1.5 -5" width="10" height="3" depth="0.1" color="#EDEDED" material="roughness:0.9"></a-box>
-    <a-box position="-5 1.5 0" rotation="0 90 0" width="10" height="3" depth="0.1" color="#E0E0E0" material="roughness:0.9"></a-box>
-    <a-box position="5 1.5 0" rotation="0 90 0" width="10" height="3" depth="0.1" color="#E0E0E0" material="roughness:0.9"></a-box>
+    <!-- Стены — все 4 стороны, с текстурой и коллизией через ROOM_BOUNDS в JS -->
+    <a-box position="0 1.5 -5" width="10" height="3" depth="0.1"
+      material="src: #wallTex; repeat: 5 1.5; roughness: 0.9; metalness: 0.02"
+      shadow="receive: true"></a-box>
+    <a-box position="0 1.5 5" width="10" height="3" depth="0.1"
+      material="src: #wallTex; repeat: 5 1.5; roughness: 0.9; metalness: 0.02"
+      shadow="receive: true"></a-box>
+    <a-box position="-5 1.5 0" rotation="0 90 0" width="10" height="3" depth="0.1"
+      material="src: #wallTex; repeat: 5 1.5; roughness: 0.9; metalness: 0.02"
+      shadow="receive: true"></a-box>
+    <a-box position="5 1.5 0" rotation="0 90 0" width="10" height="3" depth="0.1"
+      material="src: #wallTex; repeat: 5 1.5; roughness: 0.9; metalness: 0.02"
+      shadow="receive: true"></a-box>
 
     <!-- Стол -->
     <a-box position="0 0.5 -1.2" width="1.4" height="0.06" depth="0.8"
@@ -405,38 +562,61 @@
     <a-cylinder position="-0.6 0.25 -0.9" radius="0.03" height="0.5" color="#4a2f1c" material="roughness:0.6" shadow="cast:true"></a-cylinder>
     <a-cylinder position="0.6 0.25 -0.9" radius="0.03" height="0.5" color="#4a2f1c" material="roughness:0.6" shadow="cast:true"></a-cylinder>
 
-    <!-- ============ Предметы для хватания ============ -->
+    <!-- ============ Предметы для хватания (все бьющиеся) ============ -->
 
-    <!-- Яблоко (хрупкое — разбивается об пол) -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; fragmentColor: #c0392b" position="-0.4 0.6 -1.35" shadow="cast:true">
-      <a-sphere radius="0.05" scale="1 0.92 1" color="#c23b22" material="roughness:0.3; metalness:0.05" segments-height="24" segments-width="24"></a-sphere>
+    <!-- Помидор — особое разбивание: пятно + брызги + звук "шлёп" -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #c0392b" position="-0.45 0.6 -1.45" shadow="cast:true">
+      <a-sphere radius="0.05" scale="1 0.92 1" color="#d32f1a" material="roughness:0.3; metalness:0.05" segments-height="24" segments-width="24"></a-sphere>
       <a-sphere radius="0.05" scale="1 0.92 1" color="#e0523a" material="roughness:0.3; metalness:0.05; opacity:0.5; transparent:true" position="0.015 0.01 0.015" segments-height="16" segments-width="16"></a-sphere>
-      <a-cylinder radius="0.004" height="0.025" color="#5b3a21" position="0 0.058 0" rotation="0 0 10"></a-cylinder>
-      <a-sphere radius="0.014" color="#4a7c2f" material="roughness:0.5" scale="1.6 0.5 1" position="0.012 0.068 0" rotation="0 0 20"></a-sphere>
+      <a-sphere radius="0.012" color="#3f7a2e" material="roughness:0.5" position="0 0.052 0"></a-sphere>
     </a-entity>
 
-    <!-- Кружка (хрупкая — разбивается об пол) -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; fragmentColor: #f0f0f0" position="0 0.615 -1.3" shadow="cast:true">
+    <!-- Кружка -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #f0f0f0" position="0 0.615 -1.45" shadow="cast:true">
       <a-cylinder radius="0.042" height="0.085" color="#f5f5f5" material="roughness:0.2; metalness:0.05" segments-radial="24"></a-cylinder>
-      <a-torus radius="0.001" radius-tubular="0.001" position="0 0.043 0" color="#dedede"></a-torus>
       <a-cylinder radius="0.044" height="0.006" color="#e6e6e6" material="roughness:0.2" position="0 0.043 0" segments-radial="24"></a-cylinder>
       <a-torus radius="0.03" radius-tubular="0.007" position="0.055 0 0" rotation="0 90 0" color="#f5f5f5" material="roughness:0.2" segments-tubular="16"></a-torus>
     </a-entity>
 
     <!-- Металлический шар -->
-    <a-entity class="grabbable" thrown-physics position="0.4 0.58 -1.35" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c" position="0.45 0.58 -1.45" shadow="cast:true">
       <a-sphere radius="0.045" color="#3a4a5c" material="roughness:0.12; metalness:0.9" segments-height="32" segments-width="32"></a-sphere>
     </a-entity>
 
     <!-- Книга -->
-    <a-entity class="grabbable" thrown-physics position="0.25 0.575 -1.0" rotation="0 20 0" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #254a75" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
       <a-box width="0.16" height="0.025" depth="0.12" color="#254a75" material="roughness:0.85; metalness:0"></a-box>
       <a-box width="0.15" height="0.016" depth="0.11" color="#f2ecd9" material="roughness:0.9; metalness:0" position="0 0.006 0"></a-box>
     </a-entity>
 
+    <!-- Тарелка -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.8; fragmentColor: #eeeeee; restHeight: 0.008" position="0 0.545 -1.2" shadow="cast:true">
+      <a-cylinder radius="0.09" height="0.012" color="#f2f2f2" material="roughness:0.25; metalness:0.05" segments-radial="28"></a-cylinder>
+      <a-cylinder radius="0.075" height="0.014" color="#e6e6e6" material="roughness:0.25; metalness:0.05" segments-radial="28" position="0 0.001 0"></a-cylinder>
+    </a-entity>
+
+    <!-- Стеклянный стакан -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.045" position="0.45 0.6 -1.2" shadow="cast:true">
+      <a-cylinder radius="0.04" height="0.09" color="#cfe8f0" material="roughness:0.05; metalness:0.1; opacity:0.35; transparent:true" segments-radial="24"></a-cylinder>
+      <a-torus radius="0.04" radius-tubular="0.003" position="0 0.045 0" color="#cfe8f0" material="roughness:0.05; opacity:0.6; transparent:true" segments-tubular="16"></a-torus>
+    </a-entity>
+
     <!-- Деревянный кубик -->
-    <a-entity class="grabbable" thrown-physics position="-0.25 0.58 -1.0" rotation="0 15 0" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.3; fragmentColor: #8a5a34; restHeight: 0.04" position="-0.45 0.58 -0.95" rotation="0 15 0" shadow="cast:true">
       <a-box width="0.08" height="0.08" depth="0.08" material="src: #woodTex; roughness:0.6; metalness:0.02"></a-box>
+    </a-entity>
+
+    <!-- Апельсин -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #e0871f; restHeight: 0.045" position="0 0.58 -0.95" shadow="cast:true">
+      <a-sphere radius="0.045" color="#e0871f" material="roughness:0.55; metalness:0.02" segments-height="24" segments-width="24"></a-sphere>
+      <a-cylinder radius="0.004" height="0.01" color="#4a7c2f" position="0 0.047 0"></a-cylinder>
+    </a-entity>
+
+    <!-- Карандаш -->
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f4c430; restHeight: 0.008" position="0.45 0.545 -0.95" rotation="0 0 90" shadow="cast:true">
+      <a-cylinder radius="0.007" height="0.14" color="#f4c430" material="roughness:0.5" segments-radial="8"></a-cylinder>
+      <a-cone radius-bottom="0.007" radius-top="0" height="0.02" color="#3a2a1a" position="0 0.08 0"></a-cone>
+      <a-cylinder radius="0.008" height="0.012" color="#e07b9e" position="0 -0.076 0"></a-cylinder>
     </a-entity>
 
     <!-- ============ Свет ============ -->
@@ -492,7 +672,7 @@
     </a-entity>
 
     <!-- Текст-подсказка -->
-    <a-text value="Ходьба: левый стик. Поворот: правый стик.&#10;Хватай курком. Разбей яблоко или кружку об пол!" position="0 2 -1.5" align="center" color="#333" width="3"></a-text>
+    <a-text value="Ходьба: левый стик. Поворот: правый стик.&#10;Хватай курком. Все предметы бьются об пол!&#10;Помидор брызгается по-особенному." position="0 2 -1.5" align="center" color="#333" width="3"></a-text>
 
   </a-scene>
 

@@ -194,34 +194,78 @@
     });
 
     // ============================================================
-    // Синтезированные звуки (без файлов, Web Audio)
+    // Общая функция удара + звуки под разные материалы
     // ============================================================
-    function playCrashSound() {
+    var sharedAudioCtx = null;
+    function getAudioCtx() {
+      if (!sharedAudioCtx) {
+        sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return sharedAudioCtx;
+    }
+
+    function playImpactSound(opts) {
+      opts = opts || {};
       try {
-        var ctx = new (window.AudioContext || window.webkitAudioContext)();
-        var bufferSize = ctx.sampleRate * 0.25;
+        var ctx = getAudioCtx();
+        var duration = opts.duration || 0.25;
+        var bufferSize = Math.floor(ctx.sampleRate * duration);
         var buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
         var data = buffer.getChannelData(0);
+        var decayPower = opts.decayPower || 2;
         for (var i = 0; i < bufferSize; i++) {
-          data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2);
+          data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, decayPower);
         }
         var noise = ctx.createBufferSource();
         noise.buffer = buffer;
         var filter = ctx.createBiquadFilter();
-        filter.type = 'highpass';
-        filter.frequency.value = 700;
+        filter.type = opts.filterType || 'highpass';
+        filter.frequency.value = opts.filterFreq || 700;
         var gain = ctx.createGain();
-        gain.gain.value = 0.5;
+        gain.gain.value = opts.noiseGain !== undefined ? opts.noiseGain : 0.5;
         noise.connect(filter);
         filter.connect(gain);
         gain.connect(ctx.destination);
         noise.start();
+
+        if (opts.pingGain) {
+          var osc = ctx.createOscillator();
+          osc.type = opts.pingType || 'sine';
+          osc.frequency.setValueAtTime(opts.pingFreqStart, ctx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(opts.pingFreqEnd || opts.pingFreqStart * 0.5, ctx.currentTime + (opts.pingDuration || 0.15));
+          var oGain = ctx.createGain();
+          oGain.gain.setValueAtTime(opts.pingGain, ctx.currentTime);
+          oGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (opts.pingDuration || 0.15) + 0.01);
+          osc.connect(oGain);
+          oGain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + (opts.pingDuration || 0.15) + 0.03);
+        }
       } catch (e) {}
+    }
+
+    function playGlassSound() {
+      playImpactSound({ duration: 0.3, filterType: 'highpass', filterFreq: 2200, noiseGain: 0.3, decayPower: 1.4, pingFreqStart: 2600, pingFreqEnd: 1000, pingGain: 0.3, pingDuration: 0.22 });
+    }
+    function playCeramicSound() {
+      playImpactSound({ duration: 0.25, filterType: 'highpass', filterFreq: 700, noiseGain: 0.5, decayPower: 2 });
+    }
+    function playMetalSound() {
+      playImpactSound({ duration: 0.3, filterType: 'bandpass', filterFreq: 1600, noiseGain: 0.4, decayPower: 1.2, pingType: 'triangle', pingFreqStart: 1400, pingFreqEnd: 300, pingGain: 0.35, pingDuration: 0.25 });
+    }
+    function playWoodSound() {
+      playImpactSound({ duration: 0.2, filterType: 'lowpass', filterFreq: 400, noiseGain: 0.5, decayPower: 2.5, pingFreqStart: 150, pingFreqEnd: 80, pingGain: 0.3, pingDuration: 0.1 });
+    }
+    function playPaperSound() {
+      playImpactSound({ duration: 0.35, filterType: 'bandpass', filterFreq: 3000, noiseGain: 0.22, decayPower: 1.8 });
+    }
+    function playSnapSound() {
+      playImpactSound({ duration: 0.08, filterType: 'highpass', filterFreq: 2500, noiseGain: 0.6, decayPower: 4 });
     }
 
     function playSplatSound() {
       try {
-        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        var ctx = getAudioCtx();
         var bufferSize = ctx.sampleRate * 0.3;
         var buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
         var data = buffer.getChannelData(0);
@@ -253,6 +297,55 @@
         osc.stop(ctx.currentTime + 0.17);
       } catch (e) {}
     }
+
+    // ============================================================
+    // Фоновая музыка — мягкий эмбиент-эффект (без файлов, Web Audio)
+    // ============================================================
+    function startBackgroundMusic() {
+      if (window.__bgMusicStarted) return;
+      window.__bgMusicStarted = true;
+      try {
+        var ctx = getAudioCtx();
+        var filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 900;
+        filter.connect(ctx.destination);
+
+        var master = ctx.createGain();
+        master.gain.value = 0.06;
+        master.connect(filter);
+
+        var freqs = [110, 146.83, 174.61, 220]; // тихий аккорд Am, создаёт спокойный фон
+        freqs.forEach(function (f, idx) {
+          var osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = f;
+
+          var g = ctx.createGain();
+          g.gain.value = 0.5 / freqs.length;
+
+          // медленный "дрейф" частоты для живого, не статичного звучания
+          var lfo = ctx.createOscillator();
+          lfo.frequency.value = 0.04 + idx * 0.015;
+          var lfoGain = ctx.createGain();
+          lfoGain.gain.value = f * 0.006;
+          lfo.connect(lfoGain);
+          lfoGain.connect(osc.frequency);
+          lfo.start();
+
+          osc.connect(g);
+          g.connect(master);
+          osc.start();
+        });
+      } catch (e) {}
+    }
+
+    window.addEventListener('DOMContentLoaded', function () {
+      var scene = document.querySelector('a-scene');
+      if (scene) scene.addEventListener('enter-vr', startBackgroundMusic);
+      document.addEventListener('click', startBackgroundMusic, { once: true });
+      document.addEventListener('keydown', startBackgroundMusic, { once: true });
+    });
 
     // ============================================================
     // Передвижение по сцене джойстиками + коллизия со стенами комнаты
@@ -450,7 +543,9 @@
         restHeight: { type: 'number', default: 0.05 },
         breakable: { type: 'boolean', default: false },
         breakType: { type: 'string', default: 'shatter' }, // 'shatter' | 'splat'
+        breakStyle: { type: 'string', default: 'ceramic' }, // 'ceramic' | 'glass' | 'metal' | 'wood' | 'paper' | 'snap'
         breakThreshold: { type: 'number', default: 1.1 },
+        gravityScale: { type: 'number', default: 1 },
         fragmentColor: { type: 'color', default: '#c0392b' }
       },
       init: function () {
@@ -474,7 +569,7 @@
         if (!this.active || !delta) return;
         delta = Math.min(delta / 1000, 0.05);
 
-        this.velocity.y -= 3.2 * delta;
+        this.velocity.y -= 3.2 * this.data.gravityScale * delta;
 
         var pos = this.el.object3D.position;
         pos.x += this.velocity.x * delta;
@@ -537,49 +632,146 @@
         this.active = false;
         this.el.isBroken = true;
         this.el.classList.remove('grabbable');
+
+        var quat = new THREE.Quaternion();
+        this.el.object3D.getWorldQuaternion(quat);
+
         this.el.setAttribute('visible', false);
 
         if (this.data.breakType === 'splat') {
           this.doSplat(pos, normal || new THREE.Vector3(0, 1, 0));
         } else {
-          this.doShatter(pos);
+          this.doShatter(pos, quat);
         }
       },
 
-      // Обычное разбивание — осколки разлетаются и звук "треска"
-      doShatter: function (pos) {
-        playCrashSound();
+      // Разбивание — эффект и звук зависят от материала предмета
+      doShatter: function (pos, quat) {
         var scene = this.el.sceneEl;
-        var color = this.data.fragmentColor;
-        var count = 7;
-        for (var i = 0; i < count; i++) {
-          var frag = document.createElement('a-entity');
-          var size = 0.014 + Math.random() * 0.02;
-          frag.setAttribute('geometry', 'primitive: tetrahedron; radius: ' + size);
-          frag.setAttribute('material', 'color: ' + color + '; roughness: 0.6; metalness: 0.05');
-          frag.setAttribute('shadow', 'cast: true');
-          frag.object3D.position.set(
-            pos.x + (Math.random() - 0.5) * 0.05,
-            pos.y + Math.random() * 0.05,
-            pos.z + (Math.random() - 0.5) * 0.05
-          );
-          frag.setAttribute('thrown-physics', 'restHeight: 0.015');
-          scene.appendChild(frag);
-
-          (function (fragEl) {
-            fragEl.addEventListener('loaded', function () {
-              var vel = new THREE.Vector3(
-                (Math.random() - 0.5) * 2.2,
-                1.2 + Math.random() * 1.2,
-                (Math.random() - 0.5) * 2.2
-              );
-              fragEl.components['thrown-physics'].throwWith(vel);
-              setTimeout(function () {
-                if (fragEl.parentNode) fragEl.parentNode.removeChild(fragEl);
-              }, 10000);
-            });
-          })(frag);
+        switch (this.data.breakStyle) {
+          case 'glass': this.shatterGlass(scene, pos); break;
+          case 'metal': this.shatterMetal(scene, pos); break;
+          case 'wood': this.shatterWood(scene, pos); break;
+          case 'paper': this.shatterPaper(scene, pos); break;
+          case 'snap': this.snapInHalf(scene, pos, quat); break;
+          default: this.shatterCeramic(scene, pos); break;
         }
+      },
+
+      // общий помощник: создать осколок с физикой и убрать через lifespan
+      spawnFragment: function (scene, geometry, material, pos, vel, opts) {
+        opts = opts || {};
+        var frag = document.createElement('a-entity');
+        frag.setAttribute('geometry', geometry);
+        frag.setAttribute('material', material);
+        frag.setAttribute('shadow', 'cast: true');
+        frag.object3D.position.set(
+          pos.x + (Math.random() - 0.5) * 0.05,
+          pos.y + Math.random() * 0.05,
+          pos.z + (Math.random() - 0.5) * 0.05
+        );
+        var physAttrs = 'restHeight: ' + (opts.restHeight !== undefined ? opts.restHeight : 0.015);
+        if (opts.gravityScale !== undefined) physAttrs += '; gravityScale: ' + opts.gravityScale;
+        frag.setAttribute('thrown-physics', physAttrs);
+        scene.appendChild(frag);
+        frag.addEventListener('loaded', function () {
+          frag.components['thrown-physics'].throwWith(vel);
+          setTimeout(function () {
+            if (frag.parentNode) frag.parentNode.removeChild(frag);
+          }, opts.lifespan || 10000);
+        });
+        return frag;
+      },
+
+      // Керамика (кружка, тарелка) — глухой треск, угловатые осколки
+      shatterCeramic: function (scene, pos) {
+        playCeramicSound();
+        var color = this.data.fragmentColor;
+        for (var i = 0; i < 7; i++) {
+          var size = 0.014 + Math.random() * 0.02;
+          var vel = new THREE.Vector3((Math.random() - 0.5) * 2.2, 1.2 + Math.random() * 1.2, (Math.random() - 0.5) * 2.2);
+          this.spawnFragment(scene, 'primitive: tetrahedron; radius: ' + size,
+            'color: ' + color + '; roughness: 0.6; metalness: 0.05', pos, vel, { restHeight: 0.015 });
+        }
+      },
+
+      // Стекло — звонкий звук, полупрозрачные острые осколки
+      shatterGlass: function (scene, pos) {
+        playGlassSound();
+        var color = this.data.fragmentColor;
+        for (var i = 0; i < 9; i++) {
+          var size = 0.01 + Math.random() * 0.018;
+          var vel = new THREE.Vector3((Math.random() - 0.5) * 2.6, 1.0 + Math.random() * 1.4, (Math.random() - 0.5) * 2.6);
+          this.spawnFragment(scene, 'primitive: tetrahedron; radius: ' + size,
+            'color: ' + color + '; roughness: 0.05; metalness: 0.1; opacity: 0.5; transparent: true', pos, vel, { restHeight: 0.01, lifespan: 9000 });
+        }
+      },
+
+      // Металл — звонкий "клац" + вмятые куски + искры
+      shatterMetal: function (scene, pos) {
+        playMetalSound();
+        var color = this.data.fragmentColor;
+        for (var i = 0; i < 5; i++) {
+          var size = 0.016 + Math.random() * 0.018;
+          var vel = new THREE.Vector3((Math.random() - 0.5) * 2.0, 1.0 + Math.random() * 1.0, (Math.random() - 0.5) * 2.0);
+          this.spawnFragment(scene, 'primitive: box; width: ' + size + '; height: ' + (size * 0.6) + '; depth: ' + size,
+            'color: ' + color + '; roughness: 0.2; metalness: 0.85', pos, vel, { restHeight: size * 0.3 });
+        }
+        for (var s = 0; s < 8; s++) {
+          var sVel = new THREE.Vector3((Math.random() - 0.5) * 3.5, 1.5 + Math.random() * 1.5, (Math.random() - 0.5) * 3.5);
+          this.spawnFragment(scene, 'primitive: sphere; radius: 0.004',
+            'color: #fff2b0; emissive: #ffcc33; emissiveIntensity: 1; roughness: 0.3', pos, sVel, { restHeight: 0.004, lifespan: 500 });
+        }
+      },
+
+      // Дерево — глухой стук, вытянутые щепки
+      shatterWood: function (scene, pos) {
+        playWoodSound();
+        var color = this.data.fragmentColor;
+        for (var i = 0; i < 5; i++) {
+          var len = 0.03 + Math.random() * 0.04;
+          var vel = new THREE.Vector3((Math.random() - 0.5) * 1.6, 0.8 + Math.random() * 0.9, (Math.random() - 0.5) * 1.6);
+          this.spawnFragment(scene, 'primitive: box; width: 0.012; height: 0.012; depth: ' + len,
+            'color: ' + color + '; roughness: 0.7; metalness: 0.02', pos, vel, { restHeight: 0.008 });
+        }
+      },
+
+      // Бумага (книга) — шелест, лёгкие листы медленно порхают вниз
+      shatterPaper: function (scene, pos) {
+        playPaperSound();
+        var color = this.data.fragmentColor;
+        for (var i = 0; i < 6; i++) {
+          var vel = new THREE.Vector3((Math.random() - 0.5) * 1.4, 0.6 + Math.random() * 0.8, (Math.random() - 0.5) * 1.4);
+          this.spawnFragment(scene, 'primitive: box; width: ' + (0.03 + Math.random() * 0.03) + '; height: 0.002; depth: ' + (0.02 + Math.random() * 0.03),
+            'color: ' + color + '; roughness: 0.9; metalness: 0', pos, vel, { restHeight: 0.001, gravityScale: 0.35, lifespan: 9000 });
+        }
+      },
+
+      // Карандаш — переламывается пополам вместо разлёта на осколки
+      snapInHalf: function (scene, pos, quat) {
+        playSnapSound();
+        var scene2 = scene;
+        [-1, 1].forEach(function (side) {
+          var offsetLocal = new THREE.Vector3(0, side * 0.035, 0).applyQuaternion(quat);
+          var fragPos = pos.clone().add(offsetLocal);
+          var vel = offsetLocal.clone().normalize().multiplyScalar(0.5 + Math.random() * 0.3);
+          vel.y += 0.6 + Math.random() * 0.4;
+
+          var frag = document.createElement('a-entity');
+          frag.setAttribute('geometry', 'primitive: cylinder; radius: 0.007; height: 0.06; segmentsRadial: 8');
+          frag.setAttribute('material', 'color: #f4c430; roughness: 0.5');
+          frag.setAttribute('shadow', 'cast: true');
+          frag.object3D.position.copy(fragPos);
+          frag.object3D.quaternion.copy(quat);
+          frag.setAttribute('thrown-physics', 'restHeight: 0.007');
+          scene2.appendChild(frag);
+          frag.addEventListener('loaded', function () {
+            frag.components['thrown-physics'].throwWith(vel);
+            setTimeout(function () {
+              if (frag.parentNode) frag.parentNode.removeChild(frag);
+            }, 10000);
+          });
+        });
       },
 
       // Помидор/апельсин: пятно на поверхности + брызги капель + звук "шлёп"
@@ -692,12 +884,12 @@
     </a-entity>
 
     <!-- Металлический шар -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c" position="0.45 0.58 -1.45" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c; breakStyle: metal" position="0.45 0.58 -1.45" shadow="cast:true">
       <a-sphere radius="0.045" material="src: #metalTex; roughness:0.12; metalness:0.9" segments-height="32" segments-width="32"></a-sphere>
     </a-entity>
 
     <!-- Книга -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #254a75" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f2ecd9; breakStyle: paper" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
       <a-box width="0.16" height="0.025" depth="0.12" color="#254a75" material="roughness:0.85; metalness:0"></a-box>
       <a-box width="0.15" height="0.016" depth="0.11" material="src: #paperTex; roughness:0.9; metalness:0" position="0 0.006 0"></a-box>
     </a-entity>
@@ -709,14 +901,14 @@
     </a-entity>
 
     <!-- Стеклянный стакан: слегка расширяется кверху, как настоящий -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.05" position="0.45 0.6 -1.2" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.05; breakStyle: glass" position="0.45 0.6 -1.2" shadow="cast:true">
       <a-cone radius-bottom="0.032" radius-top="0.04" height="0.1" color="#cfe8f0" material="roughness:0.04; metalness:0.05; opacity:0.3; transparent:true; side:double" segments-radial="24"></a-cone>
       <a-torus radius="0.04" radius-tubular="0.0025" position="0 0.05 0" color="#cfe8f0" material="roughness:0.04; opacity:0.7; transparent:true" segments-tubular="16"></a-torus>
       <a-cylinder radius="0.032" height="0.003" position="0 -0.049 0" color="#cfe8f0" material="roughness:0.04; opacity:0.5; transparent:true" segments-radial="24"></a-cylinder>
     </a-entity>
 
     <!-- Деревянный кубик -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.3; fragmentColor: #8a5a34; restHeight: 0.04" position="-0.45 0.58 -0.95" rotation="0 15 0" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.3; fragmentColor: #8a5a34; restHeight: 0.04; breakStyle: wood" position="-0.45 0.58 -0.95" rotation="0 15 0" shadow="cast:true">
       <a-box width="0.08" height="0.08" depth="0.08" material="src: #woodTex; roughness:0.6; metalness:0.02"></a-box>
     </a-entity>
 
@@ -727,7 +919,7 @@
     </a-entity>
 
     <!-- Карандаш -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f4c430; restHeight: 0.008" position="0.45 0.545 -0.95" rotation="0 0 90" shadow="cast:true">
+    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f4c430; restHeight: 0.008; breakStyle: snap" position="0.45 0.545 -0.95" rotation="0 0 90" shadow="cast:true">
       <a-cylinder radius="0.007" height="0.14" color="#f4c430" material="roughness:0.5" segments-radial="8"></a-cylinder>
       <a-cone radius-bottom="0.007" radius-top="0" height="0.02" color="#3a2a1a" position="0 0.08 0"></a-cone>
       <a-cylinder radius="0.008" height="0.012" color="#e07b9e" position="0 -0.076 0"></a-cylinder>
@@ -744,43 +936,43 @@
 
       <!-- Левая рука -->
       <a-entity id="leftHand" oculus-touch-controls="hand: left; model: false" grabber position="0 0 0">
-        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#e3ad82; roughness:0.65" position="0 0 -0.03" shadow="cast:true"></a-entity>
+        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#9b1fa8; roughness:0.4; metalness:0.15; emissive:#9b1fa8; emissiveIntensity:0.45" position="0 0 -0.03" shadow="cast:true"></a-entity>
 
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="-0.026 0.012 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="-0.009 0.014 -0.065" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#e3ad82; roughness:0.65" position="0 0 -0.0275" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="0.009 0.014 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="0.026 0.012 -0.05" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 -30 0" data-closed-rot="-50 -55 0" position="0.038 0.002 -0.005" rotation="0 -30 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
       </a-entity>
 
       <!-- Правая рука -->
       <a-entity id="rightHand" oculus-touch-controls="hand: right; model: false" grabber position="0 0 0">
-        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#e3ad82; roughness:0.65" position="0 0 -0.03" shadow="cast:true"></a-entity>
+        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#9b1fa8; roughness:0.4; metalness:0.15; emissive:#9b1fa8; emissiveIntensity:0.45" position="0 0 -0.03" shadow="cast:true"></a-entity>
 
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="-0.026 0.012 -0.05" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="-0.009 0.014 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="0.009 0.014 -0.065" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#e3ad82; roughness:0.65" position="0 0 -0.0275" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="0.026 0.012 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 30 0" data-closed-rot="-50 55 0" position="-0.038 0.002 -0.005" rotation="0 30 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
       </a-entity>
     </a-entity>

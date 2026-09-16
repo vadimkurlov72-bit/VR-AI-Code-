@@ -312,7 +312,7 @@
         filter.connect(ctx.destination);
 
         var master = ctx.createGain();
-        master.gain.value = 0.06;
+        master.gain.value = 0.16;
         master.connect(filter);
 
         var freqs = [110, 146.83, 174.61, 220]; // тихий аккорд Am, создаёт спокойный фон
@@ -322,7 +322,7 @@
           osc.frequency.value = f;
 
           var g = ctx.createGain();
-          g.gain.value = 0.5 / freqs.length;
+          g.gain.value = 0.8 / freqs.length;
 
           // медленный "дрейф" частоты для живого, не статичного звучания
           var lfo = ctx.createOscillator();
@@ -348,9 +348,382 @@
     });
 
     // ============================================================
+    // Тревожная/жуткая музыка при появлении сущности — 3 стадии
+    // по мере приближения, плюс звук скримера
+    // ============================================================
+    var horrorAudioNodes = [];
+    function stopHorrorAudio() {
+      horrorAudioNodes.forEach(function (n) {
+        try { if (n.stop) n.stop(); n.disconnect(); } catch (e) {}
+      });
+      horrorAudioNodes = [];
+    }
+    function startHorrorStage(stage) {
+      stopHorrorAudio();
+      try {
+        var ctx = getAudioCtx();
+        var master = ctx.createGain();
+        master.connect(ctx.destination);
+        var nodes = [master];
+
+        if (stage === 'spawned') {
+          master.gain.value = 0.06;
+          var osc = ctx.createOscillator();
+          osc.type = 'sine'; osc.frequency.value = 55;
+          osc.connect(master); osc.start(); nodes.push(osc);
+          var lfo = ctx.createOscillator(); lfo.frequency.value = 0.15;
+          var lfoGain = ctx.createGain(); lfoGain.gain.value = 0.035;
+          lfo.connect(lfoGain); lfoGain.connect(master.gain); lfo.start();
+          nodes.push(lfo, lfoGain);
+        } else if (stage === 'near') {
+          master.gain.value = 0.11;
+          [80, 84, 160].forEach(function (f) {
+            var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+            var g = ctx.createGain(); g.gain.value = 0.07;
+            o.connect(g); g.connect(master); o.start();
+            nodes.push(o, g);
+          });
+          var trem = ctx.createOscillator(); trem.frequency.value = 2.2;
+          var tremGain = ctx.createGain(); tremGain.gain.value = 0.045;
+          trem.connect(tremGain); tremGain.connect(master.gain); trem.start();
+          nodes.push(trem, tremGain);
+        } else if (stage === 'close') {
+          master.gain.value = 0.16;
+          [60, 63, 240].forEach(function (f) {
+            var o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+            var g = ctx.createGain(); g.gain.value = 0.05;
+            o.connect(g); g.connect(master); o.start();
+            nodes.push(o, g);
+          });
+          // пульсирующее "сердцебиение"
+          var beat = ctx.createOscillator(); beat.frequency.value = 4.5;
+          var beatGain = ctx.createGain(); beatGain.gain.value = 0.07;
+          beat.connect(beatGain); beatGain.connect(master.gain); beat.start();
+          nodes.push(beat, beatGain);
+        }
+        horrorAudioNodes = nodes;
+      } catch (e) {}
+    }
+
+    function playScreamerSound() {
+      try {
+        var ctx = getAudioCtx();
+        var bufferSize = ctx.sampleRate * 0.5;
+        var buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        var data = buffer.getChannelData(0);
+        for (var i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 0.7);
+        }
+        var noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        var filter = ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 300;
+        var gain = ctx.createGain();
+        gain.gain.value = 0.6;
+        noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        noise.start();
+
+        [700, 720, 1400].forEach(function (f) {
+          var o = ctx.createOscillator();
+          o.type = 'sawtooth';
+          o.frequency.setValueAtTime(f, ctx.currentTime);
+          o.frequency.exponentialRampToValueAtTime(f * 0.3, ctx.currentTime + 0.4);
+          var g = ctx.createGain();
+          g.gain.setValueAtTime(0.35, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+          o.connect(g); g.connect(ctx.destination);
+          o.start(); o.stop(ctx.currentTime + 0.5);
+        });
+      } catch (e) {}
+    }
+
+    // ============================================================
+    // Сущность — появляется когда все бьющиеся предметы разбиты
+    // ============================================================
+    function makeXray(el) {
+      // делает объект видимым сквозь стены (не проверяет глубину сцены)
+      el.addEventListener('loaded', function () {
+        var mesh = el.getObject3D('mesh');
+        if (mesh && mesh.material) {
+          mesh.material.depthTest = false;
+          mesh.renderOrder = 999;
+        }
+      });
+    }
+
+    function spawnEntity(scene) {
+      var entityEl = document.createElement('a-entity');
+      var angle = Math.random() * Math.PI * 2;
+      entityEl.object3D.position.set(Math.sin(angle) * 14, 0, -14 + Math.cos(angle) * 2);
+      scene.appendChild(entityEl);
+
+      entityEl.addEventListener('loaded', function () {
+        var body = document.createElement('a-entity');
+        body.setAttribute('geometry', 'primitive: cylinder; radius: 0.22; height: 1.3; segmentsRadial: 10');
+        body.setAttribute('material', 'color: #030303; shader: flat');
+        body.object3D.position.set(0, 0.75, 0);
+        entityEl.appendChild(body);
+        makeXray(body);
+
+        var head = document.createElement('a-entity');
+        head.setAttribute('geometry', 'primitive: sphere; radius: 0.16; segmentsWidth: 10; segmentsHeight: 10');
+        head.setAttribute('material', 'color: #030303; shader: flat');
+        head.object3D.position.set(0, 1.55, 0);
+        entityEl.appendChild(head);
+        makeXray(head);
+
+        [-1, 1].forEach(function (side) {
+          var eye = document.createElement('a-entity');
+          eye.setAttribute('geometry', 'primitive: sphere; radius: 0.022');
+          eye.setAttribute('material', 'color: #ff1111; shader: flat; emissive: #ff0000; emissiveIntensity: 1');
+          eye.object3D.position.set(side * 0.06, 1.57, -0.13);
+          entityEl.appendChild(eye);
+          makeXray(eye);
+        });
+      });
+
+      return entityEl;
+    }
+
+    function triggerJumpscare(cameraEl) {
+      playScreamerSound();
+
+      var face = document.createElement('a-entity');
+      face.setAttribute('geometry', 'primitive: sphere; radius: 0.35; segmentsWidth: 10; segmentsHeight: 10');
+      face.setAttribute('material', 'color: #050505; shader: flat; side: back');
+      face.object3D.position.set(0, 0, -0.32);
+      cameraEl.appendChild(face);
+
+      [-1, 1].forEach(function (side) {
+        var eye = document.createElement('a-entity');
+        eye.setAttribute('geometry', 'primitive: sphere; radius: 0.045');
+        eye.setAttribute('material', 'color: #ff1111; shader: flat; emissive: #ff0000; emissiveIntensity: 1');
+        eye.object3D.position.set(side * 0.1, 0.03, -0.1);
+        cameraEl.appendChild(eye);
+      });
+
+      setTimeout(function () {
+        window.location.reload();
+      }, 750);
+    }
+
+    // ============================================================
+    // Режиссёр игры: следит за тем, все ли предметы разбиты,
+    // управляет появлением, погоней и исходом встречи с сущностью
+    // ============================================================
+    AFRAME.registerComponent('game-director', {
+      init: function () {
+        this.state = 'idle'; // idle | stalking | caught
+        this.stage = null;
+        this.originalItems = [];
+        this.entityEl = null;
+        this.catchDistance = 0.9;
+        this.speed = 0.35;
+
+        var self = this;
+        this.el.sceneEl.addEventListener('loaded', function () {
+          setTimeout(function () { self.captureOriginalItems(); }, 800);
+        });
+      },
+      captureOriginalItems: function () {
+        var self = this;
+        var els = document.querySelectorAll('.grabbable');
+        this.originalItems = [];
+        els.forEach(function (el) {
+          var tp = el.components['thrown-physics'];
+          if (tp && tp.data.breakable) {
+            self.originalItems.push({
+              el: el,
+              pos: el.object3D.position.clone(),
+              rot: el.object3D.rotation.clone()
+            });
+          }
+        });
+      },
+      tick: function (time, delta) {
+        if (!delta || this.originalItems.length === 0) return;
+        delta = delta / 1000;
+
+        if (this.state === 'idle') {
+          var allBroken = this.originalItems.every(function (it) { return it.el.isBroken; });
+          if (allBroken) this.startHaunt();
+          return;
+        }
+
+        if (this.state === 'stalking' && this.entityEl) {
+          var camera = document.querySelector('[camera]');
+          var headPos = new THREE.Vector3();
+          camera.object3D.getWorldPosition(headPos);
+
+          var entityPos = this.entityEl.object3D.position;
+          var dx = headPos.x - entityPos.x;
+          var dz = headPos.z - entityPos.z;
+          var dist = Math.sqrt(dx * dx + dz * dz);
+
+          if (dist > 0.001) {
+            entityPos.x += (dx / dist) * this.speed * delta;
+            entityPos.z += (dz / dist) * this.speed * delta;
+          }
+          this.entityEl.object3D.lookAt(headPos.x, entityPos.y, headPos.z);
+
+          var newStage = dist > 6 ? 'spawned' : (dist > 2.5 ? 'near' : 'close');
+          if (newStage !== this.stage) {
+            this.stage = newStage;
+            startHorrorStage(newStage);
+          }
+
+          var t = TABLE_BOUNDS;
+          var hidden = headPos.y < 0.48 &&
+            headPos.x > t.minX - 0.1 && headPos.x < t.maxX + 0.1 &&
+            headPos.z > t.minZ - 0.1 && headPos.z < t.maxZ + 0.1;
+
+          if (hidden) {
+            this.resolveEscape();
+          } else if (dist < this.catchDistance) {
+            this.resolveCaught(camera);
+          }
+        }
+      },
+      startHaunt: function () {
+        this.state = 'stalking';
+        this.stage = null;
+        this.entityEl = spawnEntity(this.el.sceneEl);
+      },
+      resolveEscape: function () {
+        this.state = 'idle';
+        stopHorrorAudio();
+        if (this.entityEl && this.entityEl.parentNode) this.entityEl.parentNode.removeChild(this.entityEl);
+        this.entityEl = null;
+        this.respawnItems();
+        clearDebris();
+      },
+      resolveCaught: function (camera) {
+        this.state = 'caught';
+        stopHorrorAudio();
+        triggerJumpscare(camera);
+      },
+      respawnItems: function () {
+        this.originalItems.forEach(function (it) {
+          it.el.setAttribute('visible', true);
+          it.el.isBroken = false;
+          it.el.classList.add('grabbable');
+          it.el.object3D.position.copy(it.pos);
+          it.el.object3D.rotation.copy(it.rot);
+          var tp = it.el.components['thrown-physics'];
+          if (tp) {
+            tp.velocity.set(0, 0, 0);
+            tp.active = false;
+            tp.bounces = 0;
+          }
+        });
+      }
+    });
+
+    // ============================================================
     // Передвижение по сцене джойстиками + коллизия со стенами комнаты
     // ============================================================
     var ROOM_BOUNDS = { minX: -4.7, maxX: 4.7, minZ: -4.7, maxZ: 4.7 };
+    var TABLE_BOUNDS = { minX: -0.68, maxX: 0.68, minZ: -1.62, maxZ: -0.82, topY: 0.53 };
+
+    // ============================================================
+    // Рисование карандашом — оставляет след везде, где касается
+    // пола, стола, стен или любого предмета
+    // ============================================================
+    var inkMarks = [];
+    function trackInkMark(el) {
+      inkMarks.push(el);
+      if (inkMarks.length > 500) {
+        var old = inkMarks.splice(0, 80);
+        old.forEach(function (o) { if (o.parentNode) o.parentNode.removeChild(o); });
+      }
+    }
+
+    // осколки/пятна от разбитых предметов — можно мгновенно убрать все при возрождении
+    var debrisMarks = [];
+    function trackDebris(el) {
+      debrisMarks.push(el);
+    }
+    function clearDebris() {
+      debrisMarks.forEach(function (o) { if (o.parentNode) o.parentNode.removeChild(o); });
+      debrisMarks = [];
+    }
+    function drawDot(scene, pos, color) {
+      var dot = document.createElement('a-entity');
+      dot.setAttribute('geometry', 'primitive: sphere; radius: 0.004; segmentsWidth: 8; segmentsHeight: 8');
+      dot.setAttribute('material', 'color: ' + color + '; roughness: 0.7; metalness: 0; shader: flat');
+      dot.object3D.position.copy(pos);
+      scene.appendChild(dot);
+      trackInkMark(dot);
+    }
+    function drawSegment(scene, a, b, color) {
+      var dir = new THREE.Vector3().subVectors(b, a);
+      var len = dir.length();
+      if (len < 0.0005) return;
+      var mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+      var seg = document.createElement('a-entity');
+      seg.setAttribute('geometry', 'primitive: cylinder; radius: 0.0035; height: ' + len + '; segmentsRadial: 6');
+      seg.setAttribute('material', 'color: ' + color + '; roughness: 0.7; metalness: 0; shader: flat');
+      seg.object3D.position.copy(mid);
+      seg.object3D.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+      scene.appendChild(seg);
+      trackInkMark(seg);
+    }
+
+    AFRAME.registerComponent('pencil-draw', {
+      init: function () {
+        this.lastPoint = null;
+        this.inkColor = '#2b2b2b';
+        this.tipLocal = new THREE.Vector3(0, 0.09, 0);
+      },
+      tick: function () {
+        if (!this.el.isGrabbed || this.el.isBroken) { this.lastPoint = null; return; }
+
+        var tip = this.tipLocal.clone();
+        this.el.object3D.localToWorld(tip);
+
+        if (this.isTouchingSomething(tip)) {
+          if (this.lastPoint) {
+            var dist = this.lastPoint.distanceTo(tip);
+            if (dist > 0.004) {
+              drawSegment(this.el.sceneEl, this.lastPoint, tip, this.inkColor);
+              this.lastPoint = tip.clone();
+            }
+          } else {
+            drawDot(this.el.sceneEl, tip, this.inkColor);
+            this.lastPoint = tip.clone();
+          }
+        } else {
+          this.lastPoint = null;
+        }
+      },
+      isTouchingSomething: function (tip) {
+        var threshold = 0.012;
+
+        // пол
+        if (tip.y < threshold) return true;
+
+        // стол
+        var t = TABLE_BOUNDS;
+        if (tip.x > t.minX && tip.x < t.maxX && tip.z > t.minZ && tip.z < t.maxZ && Math.abs(tip.y - t.topY) < threshold) return true;
+
+        // стены
+        if (Math.abs(tip.x - ROOM_BOUNDS.minX) < threshold || Math.abs(tip.x - ROOM_BOUNDS.maxX) < threshold) return true;
+        if (Math.abs(tip.z - ROOM_BOUNDS.minZ) < threshold || Math.abs(tip.z - ROOM_BOUNDS.maxZ) < threshold) return true;
+
+        // любые предметы с указанным радиусом (data-draw-radius)
+        var items = document.querySelectorAll('[data-draw-radius]');
+        for (var i = 0; i < items.length; i++) {
+          var el = items[i];
+          if (el === this.el || el.isBroken) continue;
+          var center = new THREE.Vector3();
+          el.object3D.getWorldPosition(center);
+          var r = parseFloat(el.getAttribute('data-draw-radius'));
+          if (tip.distanceTo(center) < r + threshold) return true;
+        }
+        return false;
+      }
+    });
 
     AFRAME.registerComponent('locomotion', {
       init: function () {
@@ -546,13 +919,14 @@
         breakStyle: { type: 'string', default: 'ceramic' }, // 'ceramic' | 'glass' | 'metal' | 'wood' | 'paper' | 'snap'
         breakThreshold: { type: 'number', default: 1.1 },
         gravityScale: { type: 'number', default: 1 },
+        bounciness: { type: 'number', default: 0.35 },
         fragmentColor: { type: 'color', default: '#c0392b' }
       },
       init: function () {
         this.velocity = new THREE.Vector3();
         this.active = false;
         this.bounces = 0;
-        this.table = { minX: -0.68, maxX: 0.68, minZ: -1.62, maxZ: -0.82, topY: 0.53 };
+        this.table = TABLE_BOUNDS;
       },
       throwWith: function (vel) {
         this.velocity.copy(vel).multiplyScalar(0.65);
@@ -612,8 +986,8 @@
 
           pos.y = surf.y;
 
-          if (impactSpeed > 0.35 && this.bounces < 4) {
-            this.velocity.y = -this.velocity.y * 0.35;
+          if (impactSpeed > 0.35 && this.bounces < 6) {
+            this.velocity.y = -this.velocity.y * this.data.bounciness;
             this.velocity.x *= 0.6;
             this.velocity.z *= 0.6;
             this.bounces++;
@@ -674,6 +1048,7 @@
         if (opts.gravityScale !== undefined) physAttrs += '; gravityScale: ' + opts.gravityScale;
         frag.setAttribute('thrown-physics', physAttrs);
         scene.appendChild(frag);
+        trackDebris(frag);
         frag.addEventListener('loaded', function () {
           frag.components['thrown-physics'].throwWith(vel);
           setTimeout(function () {
@@ -765,6 +1140,7 @@
           frag.object3D.quaternion.copy(quat);
           frag.setAttribute('thrown-physics', 'restHeight: 0.007');
           scene2.appendChild(frag);
+          trackDebris(frag);
           frag.addEventListener('loaded', function () {
             frag.components['thrown-physics'].throwWith(vel);
             setTimeout(function () {
@@ -795,6 +1171,7 @@
         stain.object3D.quaternion.copy(quat);
 
         scene.appendChild(stain);
+        trackDebris(stain);
         setTimeout(function () {
           stain.setAttribute('animation__fade', { property: 'material.opacity', to: 0, dur: 1500 });
           setTimeout(function () {
@@ -816,6 +1193,7 @@
           );
           drop.setAttribute('thrown-physics', 'restHeight: 0.006');
           scene.appendChild(drop);
+          trackDebris(drop);
 
           (function (dropEl) {
             dropEl.addEventListener('loaded', function () {
@@ -836,7 +1214,7 @@
     });
   </script>
 
-  <a-scene shadow="type: pcfsoft" background="color: #cfe3f0">
+  <a-scene shadow="type: pcfsoft" background="color: #cfe3f0" game-director>
 
     <a-assets></a-assets>
 
@@ -871,58 +1249,89 @@
     <!-- ============ Предметы для хватания (все бьющиеся) ============ -->
 
     <!-- Помидор — брызги: пятно + капли + звук "шлёп" -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #c0392b" position="-0.45 0.6 -1.45" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.06" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #c0392b" position="-0.45 0.6 -1.45" shadow="cast:true">
       <a-sphere radius="0.05" scale="1 0.92 1" material="src: #tomatoTex; roughness:0.3; metalness:0.05" segments-height="24" segments-width="24"></a-sphere>
       <a-sphere radius="0.012" color="#3f7a2e" material="roughness:0.5" position="0 0.052 0"></a-sphere>
     </a-entity>
 
     <!-- Кружка -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #f0f0f0" position="0 0.615 -1.45" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.06" thrown-physics="breakable: true; breakThreshold: 0.9; fragmentColor: #f0f0f0" position="0 0.615 -1.45" shadow="cast:true">
       <a-cylinder radius="0.042" height="0.085" material="src: #ceramicWhiteTex; roughness:0.2; metalness:0.05" segments-radial="24"></a-cylinder>
       <a-cylinder radius="0.044" height="0.006" material="src: #ceramicWhiteTex; roughness:0.2" position="0 0.043 0" segments-radial="24"></a-cylinder>
       <a-torus radius="0.03" radius-tubular="0.007" position="0.055 0 0" rotation="0 90 0" material="src: #ceramicWhiteTex; roughness:0.2" segments-tubular="16"></a-torus>
     </a-entity>
 
     <!-- Металлический шар -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c; breakStyle: metal" position="0.45 0.58 -1.45" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.05" thrown-physics="breakable: true; breakThreshold: 1.6; fragmentColor: #3a4a5c; breakStyle: metal" position="0.45 0.58 -1.45" shadow="cast:true">
       <a-sphere radius="0.045" material="src: #metalTex; roughness:0.12; metalness:0.9" segments-height="32" segments-width="32"></a-sphere>
     </a-entity>
 
     <!-- Книга -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f2ecd9; breakStyle: paper" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.09" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f2ecd9; breakStyle: paper" position="-0.45 0.575 -1.2" rotation="0 20 0" shadow="cast:true">
       <a-box width="0.16" height="0.025" depth="0.12" color="#254a75" material="roughness:0.85; metalness:0"></a-box>
       <a-box width="0.15" height="0.016" depth="0.11" material="src: #paperTex; roughness:0.9; metalness:0" position="0 0.006 0"></a-box>
     </a-entity>
 
     <!-- Тарелка: плоское дно + приподнятый ободок по краю -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.8; fragmentColor: #eeeeee; restHeight: 0.012" position="0 0.542 -1.2" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.1" thrown-physics="breakable: true; breakThreshold: 0.8; fragmentColor: #eeeeee; restHeight: 0.012" position="0 0.542 -1.2" shadow="cast:true">
       <a-cylinder radius="0.085" height="0.01" material="src: #ceramicWhiteTex; roughness:0.25; metalness:0.05" segments-radial="32"></a-cylinder>
       <a-torus radius="0.075" radius-tubular="0.011" position="0 0.006 0" rotation="90 0 0" material="src: #ceramicWhiteTex; roughness:0.25; metalness:0.05" segments-tubular="20"></a-torus>
     </a-entity>
 
     <!-- Стеклянный стакан: слегка расширяется кверху, как настоящий -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.05; breakStyle: glass" position="0.45 0.6 -1.2" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.05" thrown-physics="breakable: true; breakThreshold: 0.7; fragmentColor: #cfe8f0; restHeight: 0.05; breakStyle: glass" position="0.45 0.6 -1.2" shadow="cast:true">
       <a-cone radius-bottom="0.032" radius-top="0.04" height="0.1" color="#cfe8f0" material="roughness:0.04; metalness:0.05; opacity:0.3; transparent:true; side:double" segments-radial="24"></a-cone>
       <a-torus radius="0.04" radius-tubular="0.0025" position="0 0.05 0" color="#cfe8f0" material="roughness:0.04; opacity:0.7; transparent:true" segments-tubular="16"></a-torus>
       <a-cylinder radius="0.032" height="0.003" position="0 -0.049 0" color="#cfe8f0" material="roughness:0.04; opacity:0.5; transparent:true" segments-radial="24"></a-cylinder>
     </a-entity>
 
     <!-- Деревянный кубик -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.3; fragmentColor: #8a5a34; restHeight: 0.04; breakStyle: wood" position="-0.45 0.58 -0.95" rotation="0 15 0" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.07" thrown-physics="breakable: true; breakThreshold: 1.3; fragmentColor: #8a5a34; restHeight: 0.04; breakStyle: wood" position="-0.45 0.58 -0.95" rotation="0 15 0" shadow="cast:true">
       <a-box width="0.08" height="0.08" depth="0.08" material="src: #woodTex; roughness:0.6; metalness:0.02"></a-box>
     </a-entity>
 
     <!-- Апельсин — тоже брызгается, как помидор, только оранжевым -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #e0871f" position="0 0.58 -0.95" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.05" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.6; fragmentColor: #e0871f" position="0 0.58 -0.95" shadow="cast:true">
       <a-sphere radius="0.045" material="src: #orangeTex; roughness:0.55; metalness:0.02" segments-height="24" segments-width="24"></a-sphere>
       <a-cylinder radius="0.004" height="0.01" color="#4a7c2f" position="0 0.047 0"></a-cylinder>
     </a-entity>
 
     <!-- Карандаш -->
-    <a-entity class="grabbable" thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f4c430; restHeight: 0.008; breakStyle: snap" position="0.45 0.545 -0.95" rotation="0 0 90" shadow="cast:true">
+    <a-entity class="grabbable" data-draw-radius="0.08" pencil-draw thrown-physics="breakable: true; breakThreshold: 1.0; fragmentColor: #f4c430; restHeight: 0.008; breakStyle: snap" position="0.45 0.545 -0.95" rotation="0 0 90" shadow="cast:true">
       <a-cylinder radius="0.007" height="0.14" color="#f4c430" material="roughness:0.5" segments-radial="8"></a-cylinder>
       <a-cone radius-bottom="0.007" radius-top="0" height="0.02" color="#3a2a1a" position="0 0.08 0"></a-cone>
       <a-cylinder radius="0.008" height="0.012" color="#e07b9e" position="0 -0.076 0"></a-cylinder>
+    </a-entity>
+
+    <!-- ============ Дополнительные предметы (на полу перед столом) ============ -->
+
+    <!-- Яйцо — тоже брызгается (желток) -->
+    <a-entity class="grabbable" data-draw-radius="0.05" thrown-physics="breakable: true; breakType: splat; breakThreshold: 0.5; fragmentColor: #f4c430" position="-0.5 0.055 -0.5" shadow="cast:true">
+      <a-sphere radius="0.035" scale="1 1.3 1" color="#f7f3e8" material="roughness:0.3; metalness:0.02" segments-height="20" segments-width="20"></a-sphere>
+    </a-entity>
+
+    <!-- Прыгучий мячик — не бьётся, отскакивает как настоящий мяч -->
+    <a-entity class="grabbable" data-draw-radius="0.035" thrown-physics="breakable: false; bounciness: 0.75" position="-0.25 0.033 -0.45" shadow="cast:true">
+      <a-sphere radius="0.033" color="#f2f2f2" material="roughness:0.35; metalness:0.02" segments-height="16" segments-width="16"></a-sphere>
+    </a-entity>
+
+    <!-- Солонка — маленькая, стеклянная (бьётся как стекло) -->
+    <a-entity class="grabbable" data-draw-radius="0.035" thrown-physics="breakable: true; breakThreshold: 0.6; breakStyle: glass; fragmentColor: #e8f4f8; restHeight: 0.045" position="0 0.048 -0.5" shadow="cast:true">
+      <a-cylinder radius="0.025" height="0.09" color="#e8f4f8" material="roughness:0.1; metalness:0.05; opacity:0.45; transparent:true" segments-radial="16"></a-cylinder>
+      <a-cylinder radius="0.02" height="0.015" color="#c0c0c0" material="roughness:0.3; metalness:0.6" position="0 0.05 0" segments-radial="16"></a-cylinder>
+    </a-entity>
+
+    <!-- Отвёртка — металл, ломается со звоном металла -->
+    <a-entity class="grabbable" data-draw-radius="0.06" thrown-physics="breakable: true; breakThreshold: 1.4; breakStyle: metal; fragmentColor: #a0a0a0; restHeight: 0.009" position="0.25 0.045 -0.45" rotation="0 0 90" shadow="cast:true">
+      <a-cylinder radius="0.009" height="0.09" color="#d0392b" material="roughness:0.5" segments-radial="10"></a-cylinder>
+      <a-cylinder radius="0.004" height="0.07" color="#c8c8c8" material="roughness:0.2; metalness:0.85" position="0 0.08 0" segments-radial="8"></a-cylinder>
+    </a-entity>
+
+    <!-- Резиновая уточка — не бьётся, весёлая игрушка, прыгучая -->
+    <a-entity class="grabbable" data-draw-radius="0.05" thrown-physics="breakable: false; bounciness: 0.5" position="0.5 0.045 -0.5" shadow="cast:true">
+      <a-sphere radius="0.04" color="#ffd447" material="roughness:0.5" segments-height="16" segments-width="16"></a-sphere>
+      <a-sphere radius="0.025" color="#ffd447" material="roughness:0.5" position="0.035 0.035 0" segments-height="12" segments-width="12"></a-sphere>
+      <a-cone radius-bottom="0.012" radius-top="0.002" height="0.02" color="#e0871f" position="0.06 0.03 0" rotation="0 0 -90" material="roughness:0.5"></a-cone>
     </a-entity>
 
     <!-- ============ Свет ============ -->
@@ -936,43 +1345,43 @@
 
       <!-- Левая рука -->
       <a-entity id="leftHand" oculus-touch-controls="hand: left; model: false" grabber position="0 0 0">
-        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#9b1fa8; roughness:0.4; metalness:0.15; emissive:#9b1fa8; emissiveIntensity:0.45" position="0 0 -0.03" shadow="cast:true"></a-entity>
+        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#e3ad82; roughness:0.65" position="0 0 -0.03" shadow="cast:true"></a-entity>
 
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="-0.026 0.012 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="-0.009 0.014 -0.065" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#e3ad82; roughness:0.65" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="0.009 0.014 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="0.026 0.012 -0.05" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 -30 0" data-closed-rot="-50 -55 0" position="0.038 0.002 -0.005" rotation="0 -30 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
       </a-entity>
 
       <!-- Правая рука -->
       <a-entity id="rightHand" oculus-touch-controls="hand: right; model: false" grabber position="0 0 0">
-        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#9b1fa8; roughness:0.4; metalness:0.15; emissive:#9b1fa8; emissiveIntensity:0.45" position="0 0 -0.03" shadow="cast:true"></a-entity>
+        <a-entity class="palm" geometry="primitive: box; width:0.075; height:0.03; depth:0.09" material="color:#e3ad82; roughness:0.65" position="0 0 -0.03" shadow="cast:true"></a-entity>
 
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="-0.026 0.012 -0.05" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.013; height:0.013; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0117; height:0.0117; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="-0.009 0.014 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-90 0 0" position="0.009 0.014 -0.065" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.055" material="color:#e3ad82; roughness:0.65" position="0 0 -0.0275" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.0275" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 0 0" data-closed-rot="-85 0 0" position="0.026 0.012 -0.06" rotation="0 0 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.014; height:0.014; depth:0.05" material="color:#e3ad82; roughness:0.65" position="0 0 -0.025" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0126; height:0.0126; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.025" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
         <a-entity class="joint" data-open-rot="0 30 0" data-closed-rot="-50 55 0" position="-0.038 0.002 -0.005" rotation="0 30 0">
-          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#b91fc7; roughness:0.4; metalness:0.15; emissive:#b91fc7; emissiveIntensity:0.4" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#f59e0b; roughness:0.4; metalness:0.1; emissive:#f59e0b; emissiveIntensity:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
+          <a-entity class="finger-seg" geometry="primitive:box; width:0.015; height:0.015; depth:0.04" material="color:#e3ad82; roughness:0.65" position="0 0 -0.02" shadow="cast:true"><a-entity class="fingertip" geometry="primitive:box; width:0.0135; height:0.0135; depth:0.014" material="color:#eab890; roughness:0.6" position="0 0 -0.02" shadow="cast:true"></a-entity></a-entity>
         </a-entity>
       </a-entity>
     </a-entity>

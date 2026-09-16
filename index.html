@@ -509,17 +509,50 @@
     }
 
     // ============================================================
+    // День/ночь — включается когда появляется сущность, гаснет,
+    // когда она забирает предметы и исчезает
+    // ============================================================
+    function setNight(isNight) {
+      var scene = document.querySelector('a-scene');
+      var ambient = document.querySelector('#ambientLight');
+      var sunLight = document.querySelector('#sunLight');
+      var fill = document.querySelector('#fillLight');
+      var sunSprite = document.querySelector('#sunSprite');
+      var moonSprite = document.querySelector('#moonSprite');
+      var flashlight = document.querySelector('#flashlight');
+
+      if (isNight) {
+        scene.setAttribute('background', 'color: #05070f');
+        if (ambient) ambient.setAttribute('light', { color: '#2b3252', intensity: 0.16 });
+        if (sunLight) sunLight.setAttribute('light', { color: '#93a6d9', intensity: 0.12 });
+        if (fill) fill.setAttribute('light', { color: '#465a8f', intensity: 0.08 });
+        if (sunSprite) sunSprite.setAttribute('visible', false);
+        if (moonSprite) moonSprite.setAttribute('visible', true);
+        if (flashlight) flashlight.setAttribute('light', 'intensity', 0.55);
+      } else {
+        scene.setAttribute('background', 'color: #cfe3f0');
+        if (ambient) ambient.setAttribute('light', { color: '#bcd1e0', intensity: 0.55 });
+        if (sunLight) sunLight.setAttribute('light', { color: '#ffffff', intensity: 0.9 });
+        if (fill) fill.setAttribute('light', { color: '#ffffff', intensity: 0.25 });
+        if (sunSprite) sunSprite.setAttribute('visible', true);
+        if (moonSprite) moonSprite.setAttribute('visible', false);
+        if (flashlight) flashlight.setAttribute('light', 'intensity', 0);
+      }
+    }
+
+    // ============================================================
     // Режиссёр игры: следит за тем, все ли предметы разбиты,
     // управляет появлением, погоней и исходом встречи с сущностью
     // ============================================================
     AFRAME.registerComponent('game-director', {
       init: function () {
-        this.state = 'idle'; // idle | stalking | caught
+        this.state = 'idle'; // idle | stalking | retreating | caught
         this.stage = null;
         this.originalItems = [];
         this.entityEl = null;
         this.catchDistance = 0.9;
-        this.speed = 0.35;
+        this.resolveDistance = 0.7; // на этом расстоянии от стола сущность "забирает" предметы и исчезает
+        this.speed = 1.15; // быстрее, чем раньше
 
         var self = this;
         this.el.sceneEl.addEventListener('loaded', function () {
@@ -551,7 +584,7 @@
           return;
         }
 
-        if (this.state === 'stalking' && this.entityEl) {
+        if ((this.state === 'stalking' || this.state === 'retreating') && this.entityEl) {
           var camera = document.querySelector('[camera]');
           var headPos = new THREE.Vector3();
           camera.object3D.getWorldPosition(headPos);
@@ -578,10 +611,21 @@
             headPos.x > t.minX - 0.1 && headPos.x < t.maxX + 0.1 &&
             headPos.z > t.minZ - 0.1 && headPos.z < t.maxZ + 0.1;
 
-          if (hidden) {
-            this.resolveEscape();
-          } else if (dist < this.catchDistance) {
-            this.resolveCaught(camera);
+          if (this.state === 'stalking') {
+            if (hidden) {
+              // игрок спрятался — сущность НЕ исчезает сразу, а идёт к столу
+              this.state = 'retreating';
+            } else if (dist < this.catchDistance) {
+              this.resolveCaught(camera);
+            }
+          } else if (this.state === 'retreating') {
+            if (!hidden) {
+              // вылез раньше времени — снова в опасности
+              this.state = 'stalking';
+            } else if (dist < this.resolveDistance) {
+              // сущность добралась до стола, забрала предметы и исчезла
+              this.resolveEscape();
+            }
           }
         }
       },
@@ -589,6 +633,7 @@
         this.state = 'stalking';
         this.stage = null;
         this.entityEl = spawnEntity(this.el.sceneEl);
+        setNight(true);
       },
       resolveEscape: function () {
         this.state = 'idle';
@@ -597,6 +642,7 @@
         this.entityEl = null;
         this.respawnItems();
         clearDebris();
+        setNight(false);
       },
       resolveCaught: function (camera) {
         this.state = 'caught';
@@ -1335,13 +1381,19 @@
     </a-entity>
 
     <!-- ============ Свет ============ -->
-    <a-light type="ambient" color="#bcd1e0" intensity="0.55"></a-light>
-    <a-light type="directional" position="1 4 2" intensity="0.9" light="castShadow: true; shadowCameraLeft: -2; shadowCameraRight: 2; shadowCameraTop: 2; shadowCameraBottom: -2"></a-light>
-    <a-light type="point" position="0 2 -1.2" intensity="0.25" distance="4"></a-light>
+    <a-light id="ambientLight" type="ambient" color="#bcd1e0" intensity="0.55"></a-light>
+    <a-light id="sunLight" type="directional" position="1 4 2" intensity="0.9" light="castShadow: true; shadowCameraLeft: -2; shadowCameraRight: 2; shadowCameraTop: 2; shadowCameraBottom: -2"></a-light>
+    <a-light id="fillLight" type="point" position="0 2 -1.2" intensity="0.25" distance="4"></a-light>
+
+    <!-- Солнце и луна — видны по очереди, в зависимости от дня/ночи -->
+    <a-entity id="sunSprite" geometry="primitive: circle; radius: 3; segments: 24" material="color: #fff6d0; shader: flat; emissive: #fff6d0; emissiveIntensity: 1" position="12 14 -28"></a-entity>
+    <a-entity id="moonSprite" visible="false" geometry="primitive: circle; radius: 2.2; segments: 24" material="color: #e6e9f2; shader: flat; emissive: #cfd6ec; emissiveIntensity: 0.9" position="-10 12 28" rotation="0 180 0"></a-entity>
 
     <!-- ============ Игрок ============ -->
     <a-entity id="rig" position="0 0 0" locomotion>
-      <a-entity camera position="0 1.6 0" look-controls wasd-controls></a-entity>
+      <a-entity camera position="0 1.6 0" look-controls wasd-controls>
+        <a-entity id="flashlight" light="type: point; color: #fff3d0; intensity: 0; distance: 6; decay: 1.6" position="0 0 -0.1"></a-entity>
+      </a-entity>
 
       <!-- Левая рука -->
       <a-entity id="leftHand" oculus-touch-controls="hand: left; model: false" grabber position="0 0 0">

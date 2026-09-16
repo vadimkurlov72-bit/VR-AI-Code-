@@ -388,6 +388,29 @@
     }
 
     // ============================================================
+    // HUD-сообщения перед лицом игрока — подсказки про сущность
+    // ============================================================
+    var hudHideTimeout = null;
+    function showHudMessage(text, autoHideMs) {
+      var group = document.querySelector('#hudGroup');
+      var textEl = document.querySelector('#hudMessage');
+      if (!group || !textEl) return;
+      if (hudHideTimeout) { clearTimeout(hudHideTimeout); hudHideTimeout = null; }
+      textEl.setAttribute('value', text);
+      group.setAttribute('visible', true);
+      if (autoHideMs) {
+        hudHideTimeout = setTimeout(function () {
+          group.setAttribute('visible', false);
+        }, autoHideMs);
+      }
+    }
+    function hideHudMessage() {
+      var group = document.querySelector('#hudGroup');
+      if (hudHideTimeout) { clearTimeout(hudHideTimeout); hudHideTimeout = null; }
+      if (group) group.setAttribute('visible', false);
+    }
+
+    // ============================================================
     // Тревожная/жуткая музыка при появлении сущности — 3 стадии
     // по мере приближения, плюс звук скримера
     // ============================================================
@@ -657,6 +680,7 @@
             if (hidden) {
               // игрок спрятался — сущность НЕ исчезает сразу, а идёт к столу
               this.state = 'retreating';
+              showHudMessage("Подожди и всё восстановится!");
             } else if (dist < this.catchDistance) {
               this.resolveCaught(camera);
             }
@@ -664,6 +688,7 @@
             if (!hidden) {
               // вылез раньше времени — снова в опасности
               this.state = 'stalking';
+              showHudMessage("Чтобы спастись от этой сущности спрячься под стол!");
             } else if (dist < this.resolveDistance) {
               // сущность добралась до стола, забрала предметы и исчезла
               this.resolveEscape();
@@ -676,6 +701,7 @@
         this.stage = null;
         this.entityEl = spawnEntity(this.el.sceneEl);
         setNight(true);
+        showHudMessage("Чтобы спастись от этой сущности спрячься под стол!");
       },
       resolveEscape: function () {
         this.state = 'idle';
@@ -685,10 +711,12 @@
         this.respawnItems();
         clearDebris();
         setNight(false);
+        showHudMessage("Сущность ушла. Можешь вылезать из-под стола!", 5000);
       },
       resolveCaught: function (camera) {
         this.state = 'caught';
         stopHorrorAudio();
+        hideHudMessage();
         triggerJumpscare(camera);
       },
       respawnItems: function () {
@@ -1435,6 +1463,12 @@
     <a-entity id="rig" position="0 0 0" locomotion>
       <a-entity camera position="0 1.6 0" look-controls wasd-controls>
         <a-entity id="flashlight" light="type: point; color: #fff3d0; intensity: 0; distance: 6; decay: 1.6" position="0 0 -0.1"></a-entity>
+
+        <!-- HUD-сообщение — подсказки про сущность, всегда перед лицом игрока -->
+        <a-entity id="hudGroup" visible="false" position="0 -0.28 -0.75">
+          <a-plane color="#000000" material="opacity: 0.6; shader: flat" width="1.1" height="0.2"></a-plane>
+          <a-text id="hudMessage" value="" align="center" color="#ffffff" width="1.05" position="0 0 0.001"></a-text>
+        </a-entity>
       </a-entity>
 
       <!-- Левая рука -->

@@ -343,9 +343,49 @@
     window.addEventListener('DOMContentLoaded', function () {
       var scene = document.querySelector('a-scene');
       if (scene) scene.addEventListener('enter-vr', startBackgroundMusic);
+      if (scene) scene.addEventListener('enter-vr', playMorningSong);
       document.addEventListener('click', startBackgroundMusic, { once: true });
+      document.addEventListener('click', playMorningSong, { once: true });
       document.addEventListener('keydown', startBackgroundMusic, { once: true });
+      document.addEventListener('keydown', playMorningSong, { once: true });
     });
+
+    // ============================================================
+    // Утренняя песня — "Drimba 'n' Bass".
+    // Сам файл сюда не встроен (авторские права), код лишь пытается
+    // проиграть аудиофайл с таким именем, если он лежит рядом с этим
+    // HTML в твоём репозитории на GitHub Pages. Если файла нет —
+    // просто тихо ничего не происходит, сайт не ломается.
+    // ============================================================
+    var MORNING_SONG_FILES = ['Drimba-n-Bass.mp3', "Drimba 'n' Bass.mp3", 'drimba-n-bass.mp3'];
+    var morningAudioEl = null;
+
+    function ensureMorningAudio() {
+      if (morningAudioEl) return morningAudioEl;
+      var audio = document.createElement('audio');
+      audio.loop = true;
+      audio.volume = 0.4;
+      audio.style.display = 'none';
+      MORNING_SONG_FILES.forEach(function (name) {
+        var source = document.createElement('source');
+        source.src = name;
+        audio.appendChild(source);
+      });
+      document.body.appendChild(audio);
+      morningAudioEl = audio;
+      return audio;
+    }
+
+    function playMorningSong() {
+      var audio = ensureMorningAudio();
+      // play() может отклониться, если файла нет или браузер блокирует автоплей — это нормально, просто тишина
+      var p = audio.play();
+      if (p && p.catch) p.catch(function () {});
+    }
+
+    function pauseMorningSong() {
+      if (morningAudioEl) morningAudioEl.pause();
+    }
 
     // ============================================================
     // Тревожная/жуткая музыка при появлении сущности — 3 стадии
@@ -529,6 +569,7 @@
         if (sunSprite) sunSprite.setAttribute('visible', false);
         if (moonSprite) moonSprite.setAttribute('visible', true);
         if (flashlight) flashlight.setAttribute('light', 'intensity', 0.55);
+        pauseMorningSong();
       } else {
         scene.setAttribute('background', 'color: #cfe3f0');
         if (ambient) ambient.setAttribute('light', { color: '#bcd1e0', intensity: 0.55 });
@@ -537,6 +578,7 @@
         if (sunSprite) sunSprite.setAttribute('visible', true);
         if (moonSprite) moonSprite.setAttribute('visible', false);
         if (flashlight) flashlight.setAttribute('light', 'intensity', 0);
+        playMorningSong();
       }
     }
 
